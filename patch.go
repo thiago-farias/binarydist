@@ -2,6 +2,7 @@ package binarydist
 
 import (
 	"bytes"
+//	"bufio"
 	"compress/bzip2"
 	"encoding/binary"
 	"errors"
