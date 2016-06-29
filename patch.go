@@ -2,19 +2,19 @@ package binarydist
 
 import (
 	"bytes"
-//	"bufio"
 	"compress/bzip2"
 	"encoding/binary"
 	"errors"
 	"io"
-	"io/ioutil"
 )
 
 var ErrCorrupt = errors.New("corrupt patch")
 
+const MaxBufferSize = int64(32 * 1024)
+
 // Patch applies patch to old, according to the bspatch algorithm,
 // and writes the result to new.
-func Patch(old io.Reader, new io.Writer, patch io.Reader) error {
+func Patch(old io.ReadSeeker, new io.Writer, patch io.Reader) error {
 	var hdr header
 	err := binary.Read(patch, signMagLittleEndian{}, &hdr)
 	if err != nil {
@@ -44,14 +44,7 @@ func Patch(old io.Reader, new io.Writer, patch io.Reader) error {
 	// The entire rest of the file is the extra block.
 	epfbz2 := bzip2.NewReader(patch)
 
-	obuf, err := ioutil.ReadAll(old)
-	if err != nil {
-		return err
-	}
-
-	nbuf := make([]byte, hdr.NewSize)
-
-	var oldpos, newpos int64
+	newpos := int64(0)
 	for newpos < hdr.NewSize {
 		var ctrl struct{ Add, Copy, Seek int64 }
 		err = binary.Read(cpfbz2, signMagLittleEndian{}, &ctrl)
@@ -64,46 +57,51 @@ func Patch(old io.Reader, new io.Writer, patch io.Reader) error {
 			return ErrCorrupt
 		}
 
-		// Read diff string
-		_, err = io.ReadFull(dpfbz2, nbuf[newpos:newpos+ctrl.Add])
-		if err != nil {
-			return ErrCorrupt
-		}
-
-		// Add old data to diff string
-		for i := int64(0); i < ctrl.Add; i++ {
-			if oldpos+i >= 0 && oldpos+i < int64(len(obuf)) {
-				nbuf[newpos+i] += obuf[oldpos+i]
+		bytes2read := ctrl.Add
+		for bytes2read > 0 {
+			bufsize := MaxBufferSize
+			if bytes2read < MaxBufferSize {
+				bufsize = bytes2read
 			}
+			diffbuf := make([]byte, bufsize)
+			_, err = io.ReadFull(dpfbz2, diffbuf)
+			if err != nil {
+				return ErrCorrupt
+			}
+			oldbuf := make([]byte, bufsize)
+			_, err = io.ReadFull(old, oldbuf)
+			if err != nil {
+				return ErrCorrupt
+			}
+			// Add old data to diff string
+			for i := int64(0); i < bufsize; i++ {
+				diffbuf[i] += oldbuf[i]
+			}
+
+			written := int64(0)
+			for written < bufsize {
+				n, err := new.Write(diffbuf[written:])
+				if err != nil {
+					return err
+				}
+				written += int64(n)
+			}
+			newpos += written
+			bytes2read -= bufsize
 		}
-
-		// Adjust pointers
-		newpos += ctrl.Add
-		oldpos += ctrl.Add
-
 		// Sanity-check
 		if newpos+ctrl.Copy > hdr.NewSize {
 			return ErrCorrupt
 		}
 
 		// Read extra string
-		_, err = io.ReadFull(epfbz2, nbuf[newpos:newpos+ctrl.Copy])
+		_, err = io.CopyN(new, epfbz2, ctrl.Copy)
 		if err != nil {
 			return ErrCorrupt
 		}
-
-		// Adjust pointers
 		newpos += ctrl.Copy
-		oldpos += ctrl.Seek
-	}
 
-	// Write the new file
-	for len(nbuf) > 0 {
-		n, err := new.Write(nbuf)
-		if err != nil {
-			return err
-		}
-		nbuf = nbuf[n:]
+		old.Seek(ctrl.Seek, 1)
 	}
 
 	return nil
