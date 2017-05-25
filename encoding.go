@@ -1,5 +1,7 @@
 package binarydist
 
+import "fmt"
+
 // SignMagLittleEndian is the numeric encoding used by the bsdiff tools.
 // It implements binary.ByteOrder using a sign-magnitude format
 // and little-endian byte order. Only methods Uint64 and String
@@ -28,6 +30,10 @@ func (signMagLittleEndian) Uint64(b []byte) uint64 {
 		y = -y
 	}
 	return uint64(y)
+}
+
+func Test(str string) {
+	fmt.Print(str);
 }
 
 func (signMagLittleEndian) PutUint64(b []byte, v uint64) {
